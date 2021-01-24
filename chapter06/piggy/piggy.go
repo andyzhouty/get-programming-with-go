@@ -8,9 +8,9 @@ import (
 func main() {
 	var piggyBank float64
 	for piggyBank <= 20.0 {
-		deposit_id := rand.Intn(3)
+		depositId := rand.Intn(3)
 		var deposit float64
-		switch deposit_id {
+		switch depositId {
 		case 0:
 			deposit = 0.05
 		case 1:
