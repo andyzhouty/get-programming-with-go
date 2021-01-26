@@ -10,13 +10,13 @@ func main() {
 	keyword := "GOLANG"
 	plainText = strings.ToUpper(plainText)
 	for i, c := range plainText {
-		var bridge int
-		bridge = int(c - 65)
-		bridge += int(keyword[i % 6] - 65)
-		bridge += 65
-		if bridge > 90 {
-			bridge -= 26
+		var char int
+		char = int(c - 65)
+		char += int(keyword[i % 6] - 65)
+		char += 65
+		if char > 90 {
+			char -= 26
 		}
-		fmt.Printf("%c", bridge)
+		fmt.Printf("%c", char)
 	}
 }
