@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	question := "¿Cómo estás?"s
+	question := "¿Cómo estás?"
 	fmt.Println(len(question), "bytes")
 	fmt.Println(utf8.RuneCountInString(question), "runes")
 
