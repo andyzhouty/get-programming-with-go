@@ -1,0 +1,176 @@
+package main
+
+import (
+	"image"
+	"log"
+	"math/rand"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// MarsGrid 网格用于表示火星的某些表面
+// 他可能会被多个不同的goroutine并发使用
+type MarsGrid struct {
+	mu     sync.Mutex
+	bounds image.Rectangle
+	cells  [][]cell
+}
+
+// Occupier 用于表示网格中一个已被占据的单元格
+// 它可能会被多个不同的goroutine并发使用
+type Occupier struct {
+	grid *MarsGrid
+	pos  image.Point
+}
+
+type cell struct {
+	occupier *Occupier
+}
+
+// RoverDriver用于驱动一台在火星表面行进的探测器
+type RoverDriver struct {
+	commandc chan command
+	occupier *Occupier
+	name     string
+}
+
+type command int
+
+// Occupy 占据网格中给定坐标点上的单元格
+// 它在单元格已经被占据或者坐标点不在网格范围内时返回nil
+// 否则它将返回一个值，该值可以用于将单元格一直网格的其他位置
+func (g *MarsGrid) Occupy(p image.Point) *Occupier {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cell := g.getCell(p)
+	if cell == nil || cell.occupier != nil {
+		return nil
+	}
+	cell.occupier = &Occupier{
+		grid: g,
+		pos:  p,
+	}
+	return cell.occupier
+}
+
+
+// 获取一个单元格
+func (g *MarsGrid) getCell(p image.Point) *cell {
+	if !p.In(g.bounds) {
+		return nil
+	}
+	return &g.cells[p.Y][p.X]
+}
+
+// MoveTo 会尝试将给定的Occupier 移至网格中的其他单元格。然后报告移动是否成功
+// 如果移动超出网格范围或者移动的目标单元格已被占据，那么移动将会失败
+// 在移动失败的情况下，Occupier将会继续留在原来的单元格
+func (o *Occupier) MoveTo(p image.Point) bool {
+	o.grid.mu.Lock()
+	defer o.grid.mu.Unlock()
+	newCell := o.grid.getCell(p)
+	if newCell == nil || newCell.occupier != nil {
+		return false
+	}
+	o.grid.getCell(o.pos).occupier = nil
+	o.pos = p
+	return true
+}
+
+// driver 负责驱动探测器。这个方法放在goroutine中运行
+func (r *RoverDriver) drive() {
+	log.Printf("%s initial position %v", r.name, r.occupier.pos)
+	direction := image.Point{X: 1, Y: 0}
+	updateInterval := 250 * time.Millisecond
+	nextMove := time.After(updateInterval)
+	for {
+		select {
+		case c := <-r.commandc:
+			switch c {
+			case right: // 右转
+				direction = image.Point{
+					X: -direction.Y,
+					Y: direction.X,
+				}
+			case left:
+				direction = image.Point{
+					X: direction.Y,
+					Y: -direction.X,
+				}
+			}
+		case <-nextMove:
+			nextMove = time.After(updateInterval)
+			newPos := r.occupier.pos.Add(direction)
+			if r.occupier.MoveTo(newPos) {
+				log.Printf("%s moved to %v", r.name, newPos)
+				break
+			}
+			log.Printf("%s blocked trying to move from %v to %v", r.name, r.occupier.pos, newPos)
+			dir := rand.Intn(3) +1
+			for i := 0; i < dir; i++ {
+				direction = image.Point{
+					X: -direction.Y,
+					Y: direction.X,
+				}
+			}
+			log.Printf("%s new random direction %v", r.name, direction)
+		}
+	}
+}
+
+// Left会讲探测器转向左方（逆时针90°）
+func (r *RoverDriver) Left() {
+	r.commandc <- left
+}
+
+// Right会将探测器转向右方
+func (r *RoverDriver) Right() {
+	r.commandc <- right
+}
+
+func NewRoverDriver(name string, grid *MarsGrid) *RoverDriver {
+	var o *Occupier
+	// 尝试一个随机点直到我们找到一个没有被占据的点
+	var startPoint image.Point
+	for o == nil {
+		startPoint = image.Point{X: rand.Intn(x), Y: rand.Intn(y)}
+		o = grid.Occupy(startPoint)
+	}
+	r := &RoverDriver{
+		commandc: make(chan command),
+		occupier: o,
+		name:     name,
+	}
+	go r.drive()
+	return r
+}
+
+func NewMarsGrid(point image.Point) *MarsGrid {
+	grid := &MarsGrid{
+		bounds: image.Rectangle{Max: point},
+		cells:  make([][]cell, y),
+	}
+	for i := range grid.cells {
+		grid.cells[i] = make([]cell, x)
+	}
+	return grid
+}
+
+const (
+	right = command(0)
+	left  = command(1)
+	x     = 50
+	y     = 60
+)
+
+func main() {
+	gridSize := image.Point{X: x, Y: y}
+	grid := NewMarsGrid(gridSize)
+	rovers := make([]*RoverDriver, 5)
+	for i := range rovers {
+		name := "rover#" + strconv.Itoa(i)
+		rovers[i] = NewRoverDriver(name, grid)
+	}
+	time.Sleep(10 * time.Second)
+}
