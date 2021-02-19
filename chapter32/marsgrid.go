@@ -1,10 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"log"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -25,7 +25,8 @@ type Occupier struct {
 }
 
 type cell struct {
-	occupier *Occupier
+	groundData SensorData
+	occupier   *Occupier
 }
 
 // RoverDriver用于驱动一台在火星表面行进的探测器
@@ -33,9 +34,73 @@ type RoverDriver struct {
 	commandc chan command
 	occupier *Occupier
 	name     string
+	radio    *Radio
 }
 
 type command int
+
+type Message struct {
+	Pos       image.Point
+	LifeSigns int
+	Rover     string
+}
+
+type Radio struct {
+	fromRover chan Message
+}
+
+type SensorData struct {
+	LifeSigns int
+}
+
+func earthReceiver(messages chan []Message) {
+	for {
+		time.Sleep(dayLength - receiveTimePerDay)
+		receiveMarsMessages(messages)
+	}
+}
+
+func receiveMarsMessages(messages chan []Message) {
+	finished := time.After(receiveTimePerDay)
+	for {
+		select {
+		case <-finished:
+			return
+		case ms := <-messages:
+			for _, m := range ms {
+				log.Printf("earth received report of life sign level %d from %s at %v", m.LifeSigns, m.Rover, m.Pos)
+			}
+		}
+	}
+}
+
+func (r *Radio) SendToEarth(m Message) {
+	r.fromRover <- m
+}
+
+func NewRadio(toEarth chan []Message) *Radio {
+	r := &Radio{
+		fromRover: make(chan Message),
+	}
+	go r.run(toEarth)
+	return r
+}
+
+func (r *Radio) run(toEarth chan []Message) {
+	var buffered []Message
+	for {
+		toEarth1 := toEarth
+		if len(buffered) == 0 {
+			toEarth1 = nil
+		}
+		select {
+		case m := <-r.fromRover:
+			buffered = append(buffered, m)
+		case toEarth1 <- buffered:
+			buffered = nil
+		}
+	}
+}
 
 // Occupy 占据网格中给定坐标点上的单元格
 // 它在单元格已经被占据或者坐标点不在网格范围内时返回nil
@@ -53,7 +118,6 @@ func (g *MarsGrid) Occupy(p image.Point) *Occupier {
 	}
 	return cell.occupier
 }
-
 
 // 获取一个单元格
 func (g *MarsGrid) getCell(p image.Point) *cell {
@@ -76,6 +140,24 @@ func (o *Occupier) MoveTo(p image.Point) bool {
 	o.grid.getCell(o.pos).occupier = nil
 	o.pos = p
 	return true
+}
+
+func (o *Occupier) Sense() SensorData {
+	o.grid.mu.Lock()
+	defer o.grid.mu.Unlock()
+	return o.grid.getCell(o.pos).groundData
+}
+
+func (r *RoverDriver) checkForLife() {
+	sensorData := r.occupier.Sense()
+	if sensorData.LifeSigns < 900 {
+		return
+	}
+	r.radio.SendToEarth(Message{
+		Pos:       r.occupier.pos,
+		LifeSigns: sensorData.LifeSigns,
+		Rover:     r.name,
+	})
 }
 
 // driver 负责驱动探测器。这个方法放在goroutine中运行
@@ -104,10 +186,11 @@ func (r *RoverDriver) drive() {
 			newPos := r.occupier.pos.Add(direction)
 			if r.occupier.MoveTo(newPos) {
 				log.Printf("%s moved to %v", r.name, newPos)
+				r.checkForLife()
 				break
 			}
 			log.Printf("%s blocked trying to move from %v to %v", r.name, r.occupier.pos, newPos)
-			dir := rand.Intn(3) +1
+			dir := rand.Intn(3) + 1
 			for i := 0; i < dir; i++ {
 				direction = image.Point{
 					X: -direction.Y,
@@ -129,7 +212,7 @@ func (r *RoverDriver) Right() {
 	r.commandc <- right
 }
 
-func NewRoverDriver(name string, grid *MarsGrid) *RoverDriver {
+func NewRoverDriver(name string, grid *MarsGrid, marsToEarth chan []Message) *RoverDriver {
 	var o *Occupier
 	// 尝试一个随机点直到我们找到一个没有被占据的点
 	var startPoint image.Point
@@ -141,6 +224,7 @@ func NewRoverDriver(name string, grid *MarsGrid) *RoverDriver {
 		commandc: make(chan command),
 		occupier: o,
 		name:     name,
+		radio:    NewRadio(marsToEarth),
 	}
 	go r.drive()
 	return r
@@ -153,24 +237,32 @@ func NewMarsGrid(point image.Point) *MarsGrid {
 	}
 	for i := range grid.cells {
 		grid.cells[i] = make([]cell, x)
+		for j := range grid.cells[i] {
+			cell := &grid.cells[i][j]
+			cell.groundData.LifeSigns = rand.Intn(1000)
+		}
 	}
 	return grid
 }
 
 const (
-	right = command(0)
-	left  = command(1)
-	x     = 50
-	y     = 60
+	right             = command(0)
+	left              = command(1)
+	x                 = 50
+	y                 = 60
+	dayLength         = 24 * time.Second
+	receiveTimePerDay = 2 * time.Second
 )
 
 func main() {
+	marsToEarth := make(chan []Message)
+	go earthReceiver(marsToEarth)
+
 	gridSize := image.Point{X: x, Y: y}
 	grid := NewMarsGrid(gridSize)
-	rovers := make([]*RoverDriver, 5)
-	for i := range rovers {
-		name := "rover#" + strconv.Itoa(i)
-		rovers[i] = NewRoverDriver(name, grid)
+	rover := make([]*RoverDriver, 5)
+	for i := range rover {
+		rover[i] = NewRoverDriver(fmt.Sprint("rover#", i), grid, marsToEarth)
 	}
-	time.Sleep(10 * time.Second)
+	time.Sleep(60 * time.Second)
 }
